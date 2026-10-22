@@ -1,0 +1,694 @@
+---
+title: "Homework 3"
+author: "Qi He"
+format:
+  html:
+    self-contained: true
+editor: visual
+---
+
+## GitHub repository: <https://github.com/Qi-He1/stats506-hw3>
+
+```{r}
+library(haven)
+library(dplyr)
+library(broom)
+```
+
+## **Problem 1**
+
+**a.**
+
+```{r}
+aux <- read_xpt("AUX_I.xpt")
+demo <- read_xpt("DEMO_I.xpt")
+
+nhanes <- inner_join(aux, demo, by = "SEQN")
+
+dim(nhanes)
+```
+
+The merged data frame contains 4,582 observations and 119 variables.
+
+**b.**
+
+```{r}
+table(nhanes$RIAGENDR, useNA = "ifany")
+table(nhanes$DMDCITZN, useNA = "ifany")
+table(nhanes$DMDHHSZA, useNA = "ifany")
+table(nhanes$INDHHIN2, useNA = "ifany")
+```
+
+```{r}
+nhanes <- nhanes %>%
+  mutate(
+    gender = factor(
+      RIAGENDR,
+      levels = c(1, 2),
+      labels = c("Male", "Female")
+    ),
+    
+    citizenship = factor(
+      DMDCITZN,
+      levels = c(1, 2),
+      labels = c("US citizen", "Not a US citizen")
+    ),
+    
+    children_under5 = DMDHHSZA,
+    
+    income_group = factor(
+      INDHHIN2,
+      levels = c(1:10, 14, 15),
+      labels = c(
+        "$0-$4,999",
+        "$5,000-$9,999",
+        "$10,000-$14,999",
+        "$15,000-$19,999",
+        "$20,000-$24,999",
+        "$25,000-$34,999",
+        "$35,000-$44,999",
+        "$45,000-$54,999",
+        "$55,000-$64,999",
+        "$65,000-$74,999",
+        "$75,000-$99,999",
+        "$100,000+"
+      ),
+      ordered = TRUE
+    )
+  )
+```
+
+```{r}
+nhanes <- nhanes %>%
+  mutate(income_score = as.numeric(income_group))
+```
+
+```{r}
+table(nhanes$gender, useNA = "ifany")
+table(nhanes$citizenship, useNA = "ifany")
+table(nhanes$children_under5, useNA = "ifany")
+table(nhanes$income_group, useNA = "ifany")
+table(nhanes$income_score, useNA = "ifany")
+```
+
+Gender was converted to a factor with informative labels for males and females. Citizenship status was converted to a factor with informative labels, and refused and unknown responses were treated as missing. The number of children aged five or younger was retained as a continuous variable. For household income, overlapping categories, refused responses, and unknown responses were treated as missing. The remaining income categories were reordered from 1 to 12 so that household income could be treated as a continuous covariate.
+
+**c.**
+
+```{r}
+model_1R <- glm(
+  AUXTWIDR ~ gender,
+  data = nhanes,
+  family = poisson
+)
+
+model_2R <- glm(
+  AUXTWIDR ~ gender + citizenship + children_under5 + income_score,
+  data = nhanes,
+  family = poisson
+)
+
+model_1L <- glm(
+  AUXTWIDL ~ gender,
+  data = nhanes,
+  family = poisson
+)
+
+model_2L <- glm(
+  AUXTWIDL ~ gender + citizenship + children_under5 + income_score,
+  data = nhanes,
+  family = poisson
+)
+```
+
+```{r}
+irr_table <- bind_rows(
+  tidy(model_1R, exponentiate = TRUE) %>%
+    mutate(Model = "1R"),
+
+  tidy(model_2R, exponentiate = TRUE) %>%
+    mutate(Model = "2R"),
+
+  tidy(model_1L, exponentiate = TRUE) %>%
+    mutate(Model = "1L"),
+
+  tidy(model_2L, exponentiate = TRUE) %>%
+    mutate(Model = "2L")
+) %>%
+  select(Model, term, IRR = estimate)
+
+knitr::kable(
+  irr_table,
+  digits = 3,
+  col.names = c("Model", "Coefficient", "Estimated IRR"),
+  row.names = FALSE
+)
+```
+
+```{r}
+models <- list(
+  "1R" = model_1R,
+  "2R" = model_2R,
+  "1L" = model_1L,
+  "2L" = model_2L
+)
+```
+
+```{r}
+model_stats <- data.frame(
+  Model = names(models),
+
+  Sample_size = unname(
+    sapply(models, nobs)
+  ),
+
+  Pseudo_R2 = unname(
+    sapply(models, function(model) {
+      y <- model.response(model.frame(model))
+
+      null_model <- glm(
+        y ~ 1,
+        family = poisson
+      )
+
+      1 - as.numeric(
+        logLik(model) / logLik(null_model)
+      )
+    })
+  ),
+
+  AIC = unname(
+    sapply(models, AIC)
+  )
+)
+
+knitr::kable(
+  model_stats,
+  digits = 3,
+  row.names = FALSE
+)
+```
+
+The estimated IRRs were generally close to 1, indicating that the associations between the predictors and tympanometric width were relatively small. In the adjusted models, after controlling for citizenship status, the number of young children, and household income, females had slightly higher predicted tympanometric width than males in both ears. Non-US citizens also had slightly higher predicted values than US citizens. The IRRs for the number of young children and household income were slightly below 1. The pseudo-$R^2$ values were close to zero, indicating that the models explained only a small proportion of the variation in tympanometric width.
+
+**d.**
+
+```{r}
+p <- summary(model_2L)$coefficients[
+  "genderFemale",
+  "Pr(>|z|)"
+]
+
+gender_IRR_test <- data.frame(
+  IRR = round(
+    exp(coef(model_2L)["genderFemale"]),
+    4
+  ),
+  p_value = format.pval(
+    p,
+    digits = 4,
+    eps = 0.0001
+  )
+)
+
+dplyr::as_tibble(gender_IRR_test)
+```
+
+```{r}
+gender_means <- emmeans::emmeans(
+  model_2L,
+  ~ gender
+)
+
+gender_predictions <- emmeans::regrid(
+  gender_means,
+  transform = "response"
+)
+
+gender_predictions
+```
+
+```{r}
+prediction_test <- pairs(gender_predictions)
+
+prediction_test
+```
+
+In model 2L, the female-to-male IRR was 1.0187 ($p < 0.0001$), indicating that females had an approximately 1.87% higher predicted left-ear tympanometric width after controlling for the other variables. The adjusted predicted values were 84.8 for males and 86.3 for females, with a male-minus-female difference of -1.59 ($p < 0.0001$). Thus, both tests provide evidence that females have a small but statistically significant higher predicted left-ear tympanometric width than males.
+
+## **Problem 2 - Sakila**
+
+**a.**
+
+```{r}
+library(DBI)
+library(RSQLite)
+library(microbenchmark)
+```
+
+```{r}
+sakila <- dbConnect(
+  SQLite(),
+  "sakila_master.db"
+)
+
+dbListTables(sakila)
+```
+
+R:
+
+```{r}
+customer_data <- dbGetQuery(
+  sakila,
+  "
+  SELECT store_id, active
+  FROM customer
+  "
+)
+```
+
+```{r}
+result_2a_R <- customer_data %>%
+  group_by(store_id) %>%
+  summarise(
+    total_customers = n(),
+    active_percent = 100 * mean(as.numeric(active))
+  )
+
+result_2a_R
+```
+
+SQL:
+
+```{r}
+result_2a_SQL <- dbGetQuery(
+  sakila,
+  "
+  SELECT
+    store_id,
+    COUNT(*) AS total_customers,
+    100.0 * AVG(active) AS active_percent
+  FROM customer
+  GROUP BY store_id
+  ORDER BY store_id
+  "
+)
+
+result_2a_SQL
+```
+
+```{r}
+benchmark_2a <- microbenchmark(
+  R_approach = {
+    customer_temp <- dbGetQuery(
+      sakila,
+      "
+      SELECT store_id, active
+      FROM customer
+      "
+    )
+
+    customer_temp %>%
+      group_by(store_id) %>%
+      summarise(
+        total_customers = n(),
+        active_percent = 100 * mean(as.numeric(active)),
+        .groups = "drop"
+      )
+  },
+
+  SQL_approach = {
+    dbGetQuery(
+      sakila,
+      "
+      SELECT
+        store_id,
+        COUNT(*) AS total_customers,
+        100.0 * AVG(active) AS active_percent
+      FROM customer
+      GROUP BY store_id
+      ORDER BY store_id
+      "
+    )
+  },
+
+  times = 100
+)
+
+benchmark_2a
+```
+
+Both approaches produced the same results. Store 1 had 326 customers, of whom 97.55% were active, while Store 2 had 273 customers, of whom 97.44% were active. Based on the median execution times, the single SQL query was faster than the R approach.
+
+**b.**
+
+R:
+
+```{r}
+staff_data <- dbGetQuery(
+  sakila,
+  "SELECT staff_id, first_name, last_name, address_id FROM staff"
+)
+
+address_data <- dbGetQuery(
+  sakila,
+  "SELECT address_id, city_id FROM address"
+)
+
+city_data <- dbGetQuery(
+  sakila,
+  "SELECT city_id, country_id FROM city"
+)
+
+country_data <- dbGetQuery(
+  sakila,
+  "SELECT country_id, country FROM country"
+)
+```
+
+```{r}
+result_2b_R <- staff_data %>%
+  left_join(address_data, by = "address_id") %>%
+  left_join(city_data, by = "city_id") %>%
+  left_join(country_data, by = "country_id") %>%
+  select(staff_id, first_name, last_name, country)
+
+result_2b_R
+```
+
+SQL:
+
+```{r}
+result_2b_SQL <- dbGetQuery(
+  sakila,
+  "
+  SELECT
+    s.staff_id,
+    s.first_name,
+    s.last_name,
+    co.country
+  FROM staff AS s
+  INNER JOIN address AS a
+    ON s.address_id = a.address_id
+  INNER JOIN city AS ci
+    ON a.city_id = ci.city_id
+  INNER JOIN country AS co
+    ON ci.country_id = co.country_id
+  ORDER BY s.staff_id
+  "
+)
+
+dplyr::as_tibble(result_2b_SQL)
+```
+
+```{r}
+benchmark_2b <- microbenchmark(
+  R_approach = {
+    staff_data <- dbGetQuery(
+      sakila,
+      "SELECT staff_id, first_name, last_name, address_id FROM staff"
+    )
+
+    address_data <- dbGetQuery(
+      sakila,
+      "SELECT address_id, city_id FROM address"
+    )
+
+    city_data <- dbGetQuery(
+      sakila,
+      "SELECT city_id, country_id FROM city"
+    )
+
+    country_data <- dbGetQuery(
+      sakila,
+      "SELECT country_id, country FROM country"
+    )
+
+    staff_data %>%
+      left_join(address_data, by = "address_id") %>%
+      left_join(city_data, by = "city_id") %>%
+      left_join(country_data, by = "country_id") %>%
+      select(staff_id, first_name, last_name, country)
+  },
+
+  SQL_approach = {
+    dbGetQuery(
+      sakila,
+      "
+      SELECT
+        s.staff_id,
+        s.first_name,
+        s.last_name,
+        co.country
+      FROM staff AS s
+      INNER JOIN address AS a
+        ON s.address_id = a.address_id
+      INNER JOIN city AS ci
+        ON a.city_id = ci.city_id
+      INNER JOIN country AS co
+        ON ci.country_id = co.country_id
+      ORDER BY s.staff_id
+      "
+    )
+  },
+
+  times = 100
+)
+
+benchmark_2b
+```
+
+Both approaches produced the same results. Mike Hillyer was located in Canada, while Jon Stephens was located in Australia. Based on the median execution times, the single SQL query was faster than the R approach.
+
+**c.**
+
+R:
+
+```{r}
+payment_data <- dbGetQuery(
+  sakila,
+  "SELECT rental_id, amount FROM payment"
+)
+
+rental_data <- dbGetQuery(
+  sakila,
+  "SELECT rental_id, inventory_id FROM rental"
+)
+
+inventory_data <- dbGetQuery(
+  sakila,
+  "SELECT inventory_id, film_id FROM inventory"
+)
+
+film_data <- dbGetQuery(
+  sakila,
+  "SELECT film_id, title FROM film"
+)
+```
+
+```{r}
+max_amount <- max(payment_data$amount)
+
+result_2c_R <- payment_data %>%
+  filter(amount == max_amount) %>%
+  inner_join(rental_data, by = "rental_id") %>%
+  inner_join(inventory_data, by = "inventory_id") %>%
+  inner_join(film_data, by = "film_id") %>%
+  distinct(title) %>%
+  arrange(title)
+
+result_2c_R
+```
+
+SQL:
+
+```{r}
+result_2c_SQL <- dbGetQuery(
+  sakila,
+  "
+  SELECT DISTINCT
+    f.title
+  FROM payment AS p
+  INNER JOIN rental AS r
+    ON p.rental_id = r.rental_id
+  INNER JOIN inventory AS i
+    ON r.inventory_id = i.inventory_id
+  INNER JOIN film AS f
+    ON i.film_id = f.film_id
+  WHERE p.amount = (
+    SELECT MAX(amount)
+    FROM payment
+  )
+  ORDER BY f.title
+  "
+)
+
+dplyr::as_tibble(result_2c_SQL)
+```
+
+```{r}
+benchmark_2c <- microbenchmark(
+  R_approach = {
+    payment_data <- dbGetQuery(
+      sakila,
+      "SELECT rental_id, amount FROM payment"
+    )
+
+    rental_data <- dbGetQuery(
+      sakila,
+      "SELECT rental_id, inventory_id FROM rental"
+    )
+
+    inventory_data <- dbGetQuery(
+      sakila,
+      "SELECT inventory_id, film_id FROM inventory"
+    )
+
+    film_data <- dbGetQuery(
+      sakila,
+      "SELECT film_id, title FROM film"
+    )
+
+    max_amount <- max(payment_data$amount)
+
+    payment_data %>%
+      filter(amount == max_amount) %>%
+      inner_join(rental_data, by = "rental_id") %>%
+      inner_join(inventory_data, by = "inventory_id") %>%
+      inner_join(film_data, by = "film_id") %>%
+      distinct(title) %>%
+      arrange(title)
+  },
+
+  SQL_approach = {
+    dbGetQuery(
+      sakila,
+      "
+      SELECT DISTINCT
+        f.title
+      FROM payment AS p
+      INNER JOIN rental AS r
+        ON p.rental_id = r.rental_id
+      INNER JOIN inventory AS i
+        ON r.inventory_id = i.inventory_id
+      INNER JOIN film AS f
+        ON i.film_id = f.film_id
+      WHERE p.amount = (
+        SELECT MAX(amount)
+        FROM payment
+      )
+      ORDER BY f.title
+      "
+    )
+  },
+
+  times = 100
+)
+
+benchmark_2c
+```
+
+Both approaches identified the same nine films associated with the maximum payment amount: FLINTSTONES HAPPINESS, MIDSUMMER GROUNDHOG, MINE TITANS, SCORPION APOLLO, SHOW LORD, STING PERSONAL, TIES HUNGER, TRAP GUYS, and VIRTUAL SPOILERS. Based on the median execution times, the single SQL query was faster than the R approach.
+
+## **Problem 3 - Australian Records**
+
+**a.**
+
+```{r}
+australia <- read.csv("au-500.csv")
+
+dim(australia)
+```
+
+```{r}
+ends_in_com <- stringr::str_detect(
+  australia$web,
+  "\\.com$"
+)
+
+mean(ends_in_com)
+```
+
+None of the websites ended in .com; therefore, the proportion was 0.
+
+**b.**
+
+```{r}
+domain_counts <- australia %>%
+  mutate(
+    email_domain = stringr::str_extract(
+      email,
+      "(?<=@).+$"
+    )
+  ) %>%
+  count(email_domain, sort = TRUE)
+
+domain_counts %>%
+  slice_head(n = 1)
+```
+
+The most common email domain was hotmail.com, which appeared 114 times.
+
+**c.**
+
+```{r}
+non_alphabetic <- stringr::str_detect(
+  australia$company_name,
+  "[^A-Za-z, ]"
+)
+
+mean(non_alphabetic) * 100
+```
+
+```{r}
+non_alphabetic_except_ampersand <- stringr::str_detect(
+  australia$company_name,
+  "[^A-Za-z,& ]"
+)
+
+mean(non_alphabetic_except_ampersand) * 100
+```
+
+9% of company names contained characters other than letters, spaces, or commas. When ampersands were also allowed, this proportion decreased to 0.8%.
+
+**d.**
+
+```{r}
+australia <- australia %>%
+  mutate(
+    phone1 = stringr::str_remove_all(phone1, "-"),
+    phone1 = stringr::str_replace(
+      phone1,
+      "^(\\d{4})(\\d{3})(\\d{3})$",
+      "\\1-\\2-\\3"
+    )
+  )
+
+australia %>%
+  select(phone1, phone2) %>%
+  head(10)
+```
+
+**e.**
+
+```{r}
+numbers <- as.numeric(
+  stringr::str_extract(australia$address, "\\d+$")
+)
+
+hist(
+  log(numbers),
+  main = "Log Apartment Numbers",
+  xlab = "Log Apartment Number"
+)
+```
+
+**f.**
+
+```{r}
+first_digit <- substr(numbers, 1, 1)
+
+table(first_digit)
+```
+
+The first digits were distributed relatively evenly instead of decreasing as expected under Benford’s law. Therefore, the apartment numbers do not appear to be real data.
